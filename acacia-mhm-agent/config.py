@@ -4,6 +4,7 @@ BASE_DIR = Path(__file__).parent
 INPUT_DIR = BASE_DIR / "input"
 OUTPUT_DIR = BASE_DIR / "output"
 EXTRACTED_DIR = OUTPUT_DIR / "extracted"
+EDITED_DIR    = OUTPUT_DIR / "edited"
 ASSETS_DIR = BASE_DIR / "assets"
 GLOSSARY_PATH = BASE_DIR / "glossary.json"
 

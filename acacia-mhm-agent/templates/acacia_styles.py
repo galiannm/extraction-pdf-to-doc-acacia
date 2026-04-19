@@ -585,15 +585,21 @@ def _is_week_row(text: str) -> bool:
 # ── Images ────────────────────────────────────────────────────────────────────
 
 def add_image_placeholder(doc: Document, text: str) -> None:
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(6)
-    p.paragraph_format.space_after  = Pt(6)
-    p.paragraph_format.left_indent  = Pt(18)
+    """Render an image placeholder as a light-grey shaded box with italic text."""
+    table = doc.add_table(rows=1, cols=1)
+    table.style = "Table Grid"
+    cell = table.cell(0, 0)
+    _shade_cell(cell, _rgb_hex(Colors.LIGHT_GREY))
+    p = cell.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after  = Pt(8)
     run = p.add_run(text)
     run.font.name   = Fonts.BODY
     run.font.size   = Pt(10)
     run.font.italic = True
     run.font.color.rgb = RGBColor(*Colors.DARK_GREY)
+    doc.add_paragraph()
 
 
 def add_image(doc: Document, abs_path: str, caption: str = "") -> None:

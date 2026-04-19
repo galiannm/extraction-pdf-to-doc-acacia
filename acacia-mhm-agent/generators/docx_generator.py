@@ -196,13 +196,19 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
     if btype in ("qr_label", "caption"):
         return False
 
+    if btype == "image_placeholder":
+        desc = block.get("description", "").strip()
+        add_image_placeholder(doc, f"[ IMAGE — {desc} ]" if desc else "[ IMAGE ]")
+        return False
+
     if btype == "toc_table":
         add_toc_table(doc, block.get("entries", []))
         return False
 
     if btype == "heading":
         level = block.get("level", 1)
-        text  = block.get("text") or ""
+        raw   = block.get("text") or ""
+        text  = str(raw) if not isinstance(raw, str) else raw
         if _is_period_line(text):
             num = _extract_period_num(text)
             add_period_banner(doc, num)
@@ -211,7 +217,8 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
         return False
 
     elif btype == "paragraph":
-        text = (block.get("text") or "").strip()
+        raw  = block.get("text") or ""
+        text = (str(raw) if not isinstance(raw, str) else raw).strip()
         if not text:
             return prev_was_bullet
 
@@ -264,9 +271,11 @@ def _mark_qr_labels(blocks: list[dict]) -> list[dict]:
     n = len(blocks)
     for i, block in enumerate(blocks):
         if (block.get('type') == 'paragraph' and i + 1 < n):
-            next_text = (blocks[i + 1].get('text') or '').strip()
+            next_raw  = blocks[i + 1].get('text') or ''
+            next_text = str(next_raw).strip() if not isinstance(next_raw, str) else next_raw.strip()
             if _is_url_only(next_text):
-                text = (block.get('text') or '').strip()
+                text_raw = block.get('text') or ''
+                text = str(text_raw).strip() if not isinstance(text_raw, str) else text_raw.strip()
                 if not text.startswith(('•', '-')) and len(text.split()) <= 10:
                     result.append({**block, 'type': 'qr_label'})
                     continue
