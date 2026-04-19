@@ -1,0 +1,16 @@
+# Environment
+.env
+.venv/
+
+# Generated output
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Glossary (rebuilt each run)
+glossary.json
