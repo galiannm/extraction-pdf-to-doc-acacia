@@ -45,7 +45,8 @@ def build_document(
 
     prev_was_bullet = False
     for page in pages:
-        for block in page["blocks"]:
+        blocks = _mark_qr_labels(page["blocks"])
+        for block in blocks:
             prev_was_bullet = _render_block(doc, block, lang, prev_was_bullet)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,6 +193,9 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
     """Render one block. Returns True if this block was a bullet paragraph."""
     btype = block.get("type")
 
+    if btype in ("qr_label", "caption"):
+        return False
+
     if btype == "toc_table":
         add_toc_table(doc, block.get("entries", []))
         return False
@@ -217,7 +221,14 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
         if _is_url_only(text):
             return prev_was_bullet
 
+        # Skip image/QR captions prefixed with ► or ▸
+        if text.startswith(('►', '▸', '► ', '▸ ')):
+            return prev_was_bullet
+
         text = _strip_toc_refs(text)
+        text = _strip_page_refs(text)
+        if not text:
+            return prev_was_bullet
 
         m = _SEMAINE_RE.match(text)
         if m:
@@ -247,6 +258,22 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _mark_qr_labels(blocks: list[dict]) -> list[dict]:
+    """Tag short non-bullet paragraphs that sit directly before a URL block as qr_label."""
+    result = []
+    n = len(blocks)
+    for i, block in enumerate(blocks):
+        if (block.get('type') == 'paragraph' and i + 1 < n):
+            next_text = (blocks[i + 1].get('text') or '').strip()
+            if _is_url_only(next_text):
+                text = (block.get('text') or '').strip()
+                if not text.startswith(('•', '-')) and len(text.split()) <= 10:
+                    result.append({**block, 'type': 'qr_label'})
+                    continue
+        result.append(block)
+    return result
+
+
 def _text_is_bullet(text: str) -> bool:
     first = next((l.strip() for l in text.splitlines() if l.strip()), "")
     return first.startswith("•") or bool(re.match(r'^-\s', first))
@@ -272,6 +299,19 @@ _TOC_REF_RE = re.compile(r'\t\d+\.?\s*$', re.MULTILINE)
 
 def _strip_toc_refs(text: str) -> str:
     return _TOC_REF_RE.sub('', text).strip()
+
+
+_PAGE_REF_RE = re.compile(
+    r'\(?\bp\.?\s*\d+(?:\s*[àa]\s*\d+)?\)?'   # p. 92, (p. 136 à 139)
+    r'|,?\s*voir\s+page\s+\w+'                  # voir page X
+    r'|,?\s*see\s+page\s+\w+',                  # see page X
+    re.IGNORECASE,
+)
+
+def _strip_page_refs(text: str) -> str:
+    """Remove inline page cross-references (p. XX, voir page...) from body text."""
+    cleaned = _PAGE_REF_RE.sub('', text)
+    return re.sub(r'[ \t]{2,}', ' ', cleaned).strip()
 
 
 def _is_period_line(text: str) -> bool:

@@ -53,7 +53,8 @@ Block rules:
 - heading 1: largest titles (period titles, major section names)
 - heading 2: sub-section titles AND all pedagogical section labels — Avant-propos, SOMMAIRE, Semaine N, Objectifs, Déroulement, Matériel, Différenciation, Ce qu'il faut savoir, Ressources, Matériel de classe, Remarques, and any equivalent section header
 - heading 3: numbered sub-sections (e.g. "1. Réflexions générales"), activity names, PS/MS labels
-- paragraph: body text; each visual paragraph in the original MUST be a separate block — NEVER merge multiple paragraphs into one; wrap emphasised or coloured words in **double asterisks** (e.g. **manipuler**, **PS**, **séance**)
+- paragraph: body text; each visual paragraph in the original MUST be a separate block — NEVER merge multiple paragraphs into one
+  BOLD: you MUST wrap every word or phrase that appears in bold font in the PDF with **double asterisks** — e.g. **Guide de la méthode**, **PS**, **un jeu par période**. This is critical: scan every line for bold text and mark it. Do not skip any bold words.
 - table: full 2D array — preserve ALL rows/columns, PS/MS labels, week labels, sub-headers
 - caption: text immediately below/beside an illustration
 

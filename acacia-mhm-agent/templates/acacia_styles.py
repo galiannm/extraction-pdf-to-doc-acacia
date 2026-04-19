@@ -256,11 +256,10 @@ def _add_highlighted_runs(p, text: str, base_size: int, lang: str) -> None:
             run = p.add_run(chunk)
             run.font.name = Fonts.BODY
             run.font.size = Pt(base_size)
-            color, term_bold = _highlight_lookup(chunk)
+            color, _ = _highlight_lookup(chunk)
             if color:
                 run.font.color.rgb = RGBColor(*color)
-                run.font.bold = True
-            elif is_markup_bold:
+            if is_markup_bold:
                 run.font.bold = True
             _set_run_lang(run, lang)
 
