@@ -1,6 +1,9 @@
 .DS_Store
 HMH/
 *.pdf
+design-templates/
+design-components/
+PLAN.md
 
 # Secrets
 .env
