@@ -32,7 +32,7 @@ MAX_RETRIES = 3
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def edit_pages(pages: list[dict], doc_name: str, edited_dir: Path) -> list[dict]:
+def edit_pages(pages: list[dict], doc_name: str, edited_dir: Path, system_prompt: str | None = None, force: bool = False) -> list[dict]:
     """
     Restructure extracted pages for readability.
 
@@ -40,13 +40,20 @@ def edit_pages(pages: list[dict], doc_name: str, edited_dir: Path) -> list[dict]
     Result is cached to edited_dir so re-runs are instant.
     """
     cache_path = edited_dir / f"{doc_name}_edited.json"
+    if force and cache_path.exists():
+        cache_path.unlink()
     if cache_path.exists():
         console.print(f"[green]Editorial cache hit:[/green] {cache_path.name}")
         with open(cache_path, encoding="utf-8") as f:
             return json.load(f)
 
     client = _make_client()
+    _active_system_prompt = system_prompt if system_prompt is not None else _SYSTEM_PROMPT
     all_blocks = [b for page in pages for b in page.get("blocks", [])]
+    period_banner, all_blocks = _extract_period_banner(all_blocks)
+    all_blocks = _deduplicate_period_headings(all_blocks)
+    if period_banner:
+        all_blocks = [period_banner] + all_blocks
     sections   = _split_into_sections(all_blocks)
 
     console.print(f"[cyan]Editorial cleanup:[/cyan] {len(sections)} sections, {len(all_blocks)} blocks total")
@@ -60,7 +67,7 @@ def edit_pages(pages: list[dict], doc_name: str, edited_dir: Path) -> list[dict]
             cleaned.extend(section)
             console.print("[dim]pass-through[/dim]")
         else:
-            edited = _edit_section(client, section)
+            edited = _edit_section(client, section, _active_system_prompt)
             cleaned.extend(edited)
             console.print(f"[green]✓[/green] → {len(edited)} blocks")
 
@@ -72,6 +79,60 @@ def edit_pages(pages: list[dict], doc_name: str, edited_dir: Path) -> list[dict]
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     console.print(f"  [green]Saved →[/green] {cache_path.name}")
+    return result
+
+
+# ── Pre-processing ────────────────────────────────────────────────────────────
+
+def _extract_period_banner(blocks: list[dict]) -> tuple[dict | None, list[dict]]:
+    """Pull out the first PÉRIODE heading to use as the single banner."""
+    for i, block in enumerate(blocks):
+        if block.get("type") == "heading" and _PERIOD_RE.match((block.get("text") or "").strip()):
+            text = (block.get("text") or "").strip()
+            # Only use it if it's a pure period label (no extra content after)
+            if not _PERIOD_PREFIX_RE.sub("", text).strip():
+                return block, blocks[:i] + blocks[i+1:]
+    return None, blocks
+
+
+_PERIOD_PREFIX_RE = re.compile(
+    r'^(PÉRIODE|PERIOD)\s*\d+[\s\n\-—]*',
+    re.IGNORECASE,
+)
+
+def _deduplicate_period_headings(blocks: list[dict]) -> list[dict]:
+    """
+    Clean up repeated "PÉRIODE N" page-header noise.
+
+    Two cases:
+    1. Heading text is ONLY a period label (e.g. "Période 1") → drop it entirely;
+       the period banner is already rendered once via add_period_banner.
+    2. Heading text starts with a period label followed by real content
+       (e.g. "Période 1 S4 Activités ritualisées MS") → strip the prefix,
+       leaving just "S4 Activités ritualisées MS".
+    """
+    result = []
+    for block in blocks:
+        if block.get("type") != "heading":
+            result.append(block)
+            continue
+
+        text = (block.get("text") or "").strip()
+
+        if not _PERIOD_RE.match(text):
+            result.append(block)
+            continue
+
+        # Strip the "Période N" prefix
+        cleaned = _PERIOD_PREFIX_RE.sub("", text).strip()
+
+        if not cleaned:
+            # Was only a period label — drop it (banner already shown once)
+            continue
+
+        # Keep with prefix removed
+        result.append({**block, "text": cleaned})
+
     return result
 
 
@@ -205,7 +266,7 @@ Restructure et réécris l'intégralité de ce contenu selon les règles ci-dess
 Retourne UNIQUEMENT le JSON — aucun commentaire, aucune balise markdown."""
 
 
-def _edit_section(client, section: list[dict]) -> list[dict]:
+def _edit_section(client, section: list[dict], system_prompt: str = _SYSTEM_PROMPT) -> list[dict]:
     blocks_json = json.dumps(section, ensure_ascii=False, indent=2)
     prompt = _INPUT_TEMPLATE.format(blocks_json=blocks_json)
 
@@ -214,7 +275,7 @@ def _edit_section(client, section: list[dict]) -> list[dict]:
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=[
-                    types.Part.from_text(text=_SYSTEM_PROMPT),
+                    types.Part.from_text(text=system_prompt),
                     types.Part.from_text(text=prompt),
                 ],
                 config=types.GenerateContentConfig(temperature=0.2),

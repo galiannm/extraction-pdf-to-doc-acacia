@@ -70,18 +70,20 @@ def translate_docx(
     subtitle: str,
     fr_title: str = "Guide des séances MHM",
     fr_subtitle: str = "Petite Section / Moyenne Section — Acacia International Pre-school",
+    translation_prompt: str | None = None,
 ) -> Path:
     """Copy FR docx → translate all body text in-place → save as EN docx."""
     console.print(f"[cyan]Translating docx:[/cyan] {fr_path.name} → {en_path.name}")
     shutil.copy(str(fr_path), str(en_path))
     doc = Document(str(en_path))
     client = _make_client()
+    _active_prompt = translation_prompt if translation_prompt is not None else _PROMPT
 
     items = _collect_items(doc)
     console.print(f"  {len(items)} text segments collected")
 
     texts = [text for _, text in items]
-    translated_texts = _batch_translate(client, texts)
+    translated_texts = _batch_translate(client, texts, _active_prompt)
 
     for (para, _), new_text in zip(items, translated_texts):
         if new_text and new_text.strip():
@@ -137,28 +139,31 @@ def _should_translate(text: str) -> bool:
 
 # ── Translation ───────────────────────────────────────────────────────────────
 
-def _batch_translate(client, texts: list[str]) -> list[str]:
+def _batch_translate(client, texts: list[str], prompt_template: str = _PROMPT) -> list[str]:
     results = []
     total = len(texts)
     for i in range(0, total, BATCH_SIZE):
         batch = texts[i : i + BATCH_SIZE]
         n = len(results) + len(batch)
         console.print(f"  Batch {i // BATCH_SIZE + 1}: items {i+1}–{n}/{total}…")
-        translated = _call_gemini(client, batch)
+        translated = _call_gemini(client, batch, prompt_template)
         results.extend(translated)
     return results
 
 
-def _call_gemini(client, texts: list[str]) -> list[str]:
+def _call_gemini(client, texts: list[str], prompt_template: str = _PROMPT) -> list[str]:
     payload = json.dumps({"texts": texts}, ensure_ascii=False)
-    prompt = f"{_PROMPT}\n\nTexts to translate:\n{payload}"
+    prompt = f"{prompt_template}\n\nTexts to translate:\n{payload}"
 
     for attempt in range(1, 4):
         try:
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=prompt,
-                config=gtypes.GenerateContentConfig(temperature=0),
+                config=gtypes.GenerateContentConfig(
+                    temperature=0,
+                    thinking_config=gtypes.ThinkingConfig(thinking_budget=0),
+                ),
             )
             raw = response.text.strip()
             if raw.startswith("```"):

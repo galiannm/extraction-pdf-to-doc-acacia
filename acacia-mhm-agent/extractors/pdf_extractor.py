@@ -25,11 +25,12 @@ RETRY_WAIT_BASE  = 8    # seconds for first retry (×attempt each time)
 REQUEST_TIMEOUT  = 120  # 2 minutes per page — plenty for dense content
 
 
-def _extraction_prompt(start_page: int, n_pages: int) -> str:
+def _extraction_prompt(start_page: int, n_pages: int, extra_instructions: str = "") -> str:
     page_range = (
         f"page {start_page}" if n_pages == 1
         else f"pages {start_page} to {start_page + n_pages - 1}"
     )
+    extra = f"\n\nADDITIONAL INSTRUCTIONS:\n{extra_instructions.strip()}" if extra_instructions.strip() else ""
     return f"""You are extracting structured content from {page_range} of a French early-years mathematics teacher guide (MHM — Méthode Heuristique de Mathématiques).
 
 Each image is one page, in order. Return ALL content as JSON:
@@ -61,13 +62,20 @@ Block rules:
 Rules:
 - One page object per image, in order, starting from page_num {start_page}
 - Preserve every word exactly as written (French, accents, special chars)
-- Do NOT translate, simplify, or omit anything
+- Do NOT translate, simplify, or omit anything{extra}
 - Return ONLY the JSON — no markdown fences"""
 
 
-def extract_pdf(pdf_path: Path, extracted_dir: Path) -> dict:
+def extract_pdf(pdf_path: Path, extracted_dir: Path, extra_instructions: str = "", force: bool = False) -> dict:
     doc_name = pdf_path.stem
     out_dir  = extracted_dir / doc_name
+    json_path = out_dir / f"{doc_name}.json"
+
+    if not force and json_path.exists():
+        console.print(f"[green]Extraction cache hit:[/green] {json_path.name}")
+        with open(json_path, encoding="utf-8") as f:
+            return json.load(f)
+
     images_dir = out_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -92,7 +100,7 @@ def extract_pdf(pdf_path: Path, extracted_dir: Path) -> dict:
             img_path.write_bytes(img_bytes)
             jpeg_list.append(img_bytes)
 
-        pages = _call_with_retry(client, doc, batch, jpeg_list, start_page=start + 1)
+        pages = _call_with_retry(client, doc, batch, jpeg_list, start_page=start + 1, extra_instructions=extra_instructions)
 
         for page_dict, i in zip(pages, batch):
             page_dict["image_path"] = str(images_dir / f"page_{i+1:04d}.jpg")
@@ -138,13 +146,13 @@ def _render_page(doc: fitz.Document, page_index: int, lightweight: bool = False)
 
 # ── Gemini call with retry ────────────────────────────────────────────────────
 
-def _call_with_retry(client, doc, batch: list[int], jpeg_list: list[bytes], start_page: int) -> list:
+def _call_with_retry(client, doc, batch: list[int], jpeg_list: list[bytes], start_page: int, extra_instructions: str = "") -> list:
     last_err = ""
     current_jpegs = jpeg_list
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             use_compact = attempt > 2
-            return _call_gemini(client, current_jpegs, start_page, compact=use_compact)
+            return _call_gemini(client, current_jpegs, start_page, compact=use_compact, extra_instructions=extra_instructions)
         except Exception as e:
             last_err = str(e)
             err_short = last_err[:70]
@@ -171,17 +179,20 @@ Return ONLY:
 Rules: heading for titles/section names, paragraph for body text. One block per visual paragraph. Preserve French exactly. No markdown fences."""
 
 
-def _call_gemini(client, jpeg_list: list[bytes], start_page: int, compact: bool = False) -> list:
+def _call_gemini(client, jpeg_list: list[bytes], start_page: int, compact: bool = False, extra_instructions: str = "") -> list:
     parts = []
     for jpeg in jpeg_list:
         parts.append(types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"))
-    prompt = _COMPACT_PROMPT.replace("PAGE", str(start_page)) if compact else _extraction_prompt(start_page, len(jpeg_list))
+    prompt = _COMPACT_PROMPT.replace("PAGE", str(start_page)) if compact else _extraction_prompt(start_page, len(jpeg_list), extra_instructions)
     parts.append(types.Part.from_text(text=prompt))
 
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=parts,
-        config=types.GenerateContentConfig(temperature=0),
+        config=types.GenerateContentConfig(
+            temperature=0,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
 
     raw = response.text.strip()
