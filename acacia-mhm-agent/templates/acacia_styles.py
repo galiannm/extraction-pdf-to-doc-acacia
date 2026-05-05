@@ -446,7 +446,7 @@ def add_table(doc: Document, data: list[list[str]]) -> None:
 
     for r_idx, row in enumerate(data):
         for c_idx in range(num_cols):
-            cell_text = str(row[c_idx]) if c_idx < len(row) else ""
+            cell_text = _safe_text(row[c_idx]) if c_idx < len(row) else ""
             cell = table.cell(r_idx, c_idx)
             cell.text = ""
             p = cell.paragraphs[0]
@@ -543,7 +543,19 @@ def _set_table_col_widths(table, twips: list) -> None:
                 tcW.set(qn('w:type'), 'dxa')
 
 
-def _cell_fill(r_idx: int, c_idx: int, text: str, data: list) -> str | None:
+def _safe_text(value) -> str:
+    """Coerce any LLM cell value to a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(_safe_text(v) for v in value)
+    if isinstance(value, dict):
+        return str(value.get("text", value))
+    return str(value)
+
+
+def _cell_fill(r_idx: int, c_idx: int, text, data: list) -> str | None:
+    text = _safe_text(text)
     t = text.lower().strip()
 
     if _is_week_row(text):
@@ -568,7 +580,7 @@ def _cell_fill(r_idx: int, c_idx: int, text: str, data: list) -> str | None:
         return _rgb_hex(Colors.MS_BADGE)
 
     if data and c_idx < len(data[0]):
-        header = data[0][c_idx].lower()
+        header = _safe_text(data[0][c_idx]).lower()
         if any(k in header for k in ("ritualis", "ritualized")):
             return _rgb_hex(Colors.LIGHT_GREY)
         if any(k in header for k in ("apprentiss", "guided")):

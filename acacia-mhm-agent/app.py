@@ -239,16 +239,28 @@ st.caption("Select documents in the sidebar, then describe what you want or clic
 # ── Downloads (always visible if files exist) ─────────────────────────────────
 
 if FR_DOCX.exists() or EN_DOCX.exists():
-    st.subheader("Generated documents")
+    st.markdown("""
+<div style="
+    background: linear-gradient(135deg, #f0fff4, #e6ffee);
+    border: 2.5px solid #38a169;
+    border-radius: 16px;
+    padding: 20px 28px 16px 28px;
+    margin-bottom: 24px;
+">
+<div style="font-size:1.3rem; font-weight:700; color:#276749; margin-bottom:14px;">
+    ✅ Documents ready — click to download
+</div>
+""", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         if FR_DOCX.exists():
-            st.download_button("Download French .docx", FR_DOCX.read_bytes(),
+            st.download_button("📄 Download French version (.docx)", FR_DOCX.read_bytes(),
                                "Acacia_MHM_FR.docx", DOCX_MIME, key="dl_fr_top", use_container_width=True)
     with c2:
         if EN_DOCX.exists():
-            st.download_button("Download English .docx", EN_DOCX.read_bytes(),
+            st.download_button("📄 Download English version (.docx)", EN_DOCX.read_bytes(),
                                "Acacia_MHM_EN.docx", DOCX_MIME, key="dl_en_top", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
 # ── Chat — primary interaction ────────────────────────────────────────────────
@@ -517,13 +529,4 @@ if run_all and selected:
         _run_translate()
         st.success("Stage 4 complete — English document translated")
 
-    st.divider()
-    c1, c2 = st.columns(2)
-    with c1:
-        if FR_DOCX.exists():
-            st.download_button("Download French .docx", FR_DOCX.read_bytes(),
-                               "Acacia_MHM_FR.docx", DOCX_MIME, key="dl_fr_final", use_container_width=True)
-    with c2:
-        if EN_DOCX.exists():
-            st.download_button("Download English .docx", EN_DOCX.read_bytes(),
-                               "Acacia_MHM_EN.docx", DOCX_MIME, key="dl_en_final", use_container_width=True)
+    st.rerun()
