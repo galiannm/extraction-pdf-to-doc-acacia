@@ -7,13 +7,18 @@ from pathlib import Path
 from docx import Document
 from rich.console import Console
 
+import templates.acacia_styles as _acacia_styles
 from templates.acacia_styles import (
     setup_document,
     add_header,
     add_footer,
     add_cover_page,
     add_period_banner,
+    add_activity_title_bar,
+    add_subtitle_badge,
     add_heading,
+    add_section_label,
+    add_info_box,
     add_paragraph,
     add_indented_paragraph,
     add_toc_table,
@@ -40,6 +45,7 @@ def build_document(
 
     console.print(f"[cyan]Building document:[/cyan] {output_path.name}")
     pages = _inject_toc_table(pages)
+    pages = _preprocess_pages(pages)
     total_blocks = sum(len(p["blocks"]) for p in pages)
     console.print(f"  {len(pages)} pages, {total_blocks} blocks")
 
@@ -53,6 +59,133 @@ def build_document(
     doc.save(str(output_path))
     console.print(f"  [green]Saved →[/green] {output_path}")
     return output_path
+
+
+def build_faithful_document(
+    pages: list[dict],
+    output_path: Path,
+    title: str,
+    subtitle: str = "",
+    lang: str = "fr-FR",
+) -> Path:
+    """Build a Word doc that mimics the source PDF — standard fonts, no Acacia branding."""
+    _acacia_styles._set_mode(faithful=True)
+    try:
+        result = build_document(pages, output_path, title, subtitle, lang)
+    finally:
+        _acacia_styles._set_mode(faithful=False)
+    return result
+
+
+# ── Page pre-processing ───────────────────────────────────────────────────────
+
+def _preprocess_pages(pages: list[dict]) -> list[dict]:
+    result = []
+    for page in pages:
+        blocks = _merge_programmation_blocks(page.get("blocks", []))
+        new_page = dict(page)
+        new_page["blocks"] = blocks
+        result.append(new_page)
+    return result
+
+
+def _val_to_str(val) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return ", ".join(str(v) for v in val if str(v).strip())
+    return str(val)
+
+
+def _content_blocks_to_cell(blocks: list[dict]) -> str:
+    parts = []
+    for b in blocks:
+        btype = b.get("type", "")
+        if btype == "paragraph":
+            text = (_val_to_str(b.get("text"))).strip()
+            if text:
+                parts.append(text)
+        elif btype == "heading":
+            text = (_val_to_str(b.get("text"))).strip()
+            if text:
+                parts.append(f"**{text}**")
+        elif btype == "subtitle_badge":
+            badge = _val_to_str(b.get("badge_text", "")).strip().strip("[]'\"")
+            title = _val_to_str(b.get("title_text", "")).strip()
+            if badge and badge not in ("", "''"):
+                parts.append(f"**{badge}** {title}".strip())
+            elif title:
+                parts.append(title)
+    return "\n".join(p for p in parts if p.strip())
+
+
+def _merge_programmation_blocks(blocks: list[dict]) -> list[dict]:
+    """
+    Detect the Programmation overview pattern (repeated activity_title blocks
+    for the same week structure) and convert to a single table block.
+    """
+    activity_titles = [b for b in blocks if b.get("type") == "activity_title"]
+    if len(activity_titles) < 6:
+        return blocks
+
+    # Must have at least 2 different activity types, each appearing multiple times
+    type_counts: dict[str, int] = {}
+    for b in activity_titles:
+        t = b.get("activity_type", "")
+        type_counts[t] = type_counts.get(t, 0) + 1
+    if len(type_counts) < 2 or max(type_counts.values()) < 2:
+        return blocks
+
+    # Group blocks by (week_num, activity_type)
+    groups: dict[tuple, list] = {}
+    non_activity: list[dict] = []
+    trailing: list[dict] = []
+    current_title: dict | None = None
+    current_content: list[dict] = []
+    seen_first = False
+
+    for block in blocks:
+        if block.get("type") == "activity_title":
+            if current_title is not None:
+                wm = re.search(r"\d+", str(current_title.get("week", "")))
+                wnum = int(wm.group()) if wm else 0
+                key = (wnum, current_title.get("activity_type", ""))
+                groups[key] = current_content
+            else:
+                non_activity = list(current_content)
+            current_title = block
+            current_content = []
+            seen_first = True
+        elif seen_first:
+            current_content.append(block)
+        else:
+            non_activity.append(block)
+
+    if current_title is not None:
+        wm = re.search(r"\d+", str(current_title.get("week", "")))
+        wnum = int(wm.group()) if wm else 0
+        key = (wnum, current_title.get("activity_type", ""))
+        groups[key] = current_content
+
+    week_nums = sorted(set(k[0] for k in groups))
+    _ATYPE_ORDER  = ["ritualisee", "guidee", "autonomie"]
+    _ATYPE_LABELS = {
+        "ritualisee": "Activités ritualisées",
+        "guidee":     "Apprentissages guidés",
+        "autonomie":  "Autonomie et semi-autonomie",
+    }
+    _ATYPE_COLORS = {"ritualisee": "yellow", "guidee": "blue", "autonomie": "green"}
+
+    present = [a for a in _ATYPE_ORDER if any(a == k[1] for k in groups)]
+    header = [""] + [_ATYPE_LABELS[a] for a in present]
+    rows = [header]
+    for wnum in week_nums:
+        row = [f"S{wnum}"] + [_content_blocks_to_cell(groups.get((wnum, a), [])) for a in present]
+        rows.append(row)
+
+    col_colors = ["none"] + [_ATYPE_COLORS.get(a, "none") for a in present]
+    table_block = {"type": "table", "data": rows, "col_colors": col_colors}
+    return non_activity + [table_block] + trailing
 
 
 # ── TOC pre-processing ────────────────────────────────────────────────────────
@@ -196,6 +329,38 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
     if btype in ("qr_label", "caption"):
         return False
 
+    if btype == "activity_title":
+        week          = block.get("week") or ""
+        periode_num   = block.get("periode_num")
+        activity_type = block.get("activity_type", "")
+        activity_label = block.get("activity_label", "")
+        # Only render as title bar when all fields are valid AND the label is one of the 3 main types
+        if (week and periode_num and
+                activity_type in ("ritualisee", "guidee", "autonomie") and
+                re.search(r'\d', str(week)) and
+                _is_main_activity_label(activity_label)):
+            add_activity_title_bar(
+                doc,
+                periode_num=int(periode_num),
+                week=week,
+                activity_label=activity_label,
+                activity_type=activity_type,
+                classes=block.get("classes", []),
+            )
+        elif activity_label:
+            add_heading(doc, activity_label, level=2, lang=lang)
+        return False
+
+    if btype == "subtitle_badge":
+        add_subtitle_badge(
+            doc,
+            badge_text=block.get("badge_text", ""),
+            title_text=block.get("title_text", ""),
+            activity_type=block.get("activity_type", "ritualisee"),
+            lang=lang,
+        )
+        return False
+
     if btype == "image_placeholder":
         desc = block.get("description", "").strip()
         add_image_placeholder(doc, f"[ IMAGE — {desc} ]" if desc else "[ IMAGE ]")
@@ -212,8 +377,14 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
         if _is_period_line(text):
             num = _extract_period_num(text)
             add_period_banner(doc, num)
+        elif _is_savoir_box(text):
+            add_info_box(doc, text, lang)
+        elif _is_section_label(text):
+            add_section_label(doc, text, lang)
         else:
-            add_heading(doc, text, level, lang)
+            add_heading(doc, text, level, lang,
+                        bg_color=block.get("bg_color"),
+                        text_color=block.get("text_color"))
         return False
 
     elif btype == "paragraph":
@@ -254,7 +425,7 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
 
     elif btype == "table":
         data = block.get("data", [])
-        add_table(doc, data)
+        add_table(doc, data, col_colors=block.get("col_colors"))
         return False
 
     elif btype == "image":
@@ -323,9 +494,30 @@ def _strip_page_refs(text: str) -> str:
     return re.sub(r'[ \t]{2,}', ' ', cleaned).strip()
 
 
+_MAIN_ACTIVITY_LABELS = {
+    "activités ritualisées", "activité ritualisée",
+    "apprentissages guidés", "apprentissages guides",
+    "autonomie et semi-autonomie",
+}
+
+def _is_main_activity_label(label: str) -> bool:
+    return label.strip().lower() in _MAIN_ACTIVITY_LABELS
+
+_SECTION_LABELS = (
+    'objectif', 'déroulement', 'deroulement', 'différenciation', 'differentiation',
+    'matériel', 'materiel', 'organisation', 'ressource', 'remarque',
+)
+
+def _is_section_label(text: str) -> bool:
+    clean = text.strip().rstrip(':').lower()
+    return any(clean.startswith(s) for s in _SECTION_LABELS)
+
+def _is_savoir_box(text: str) -> bool:
+    t = text.lower()
+    return "ce qu'il faut savoir" in t or "ce qu'il faut savoir" in t
+
 def _is_period_line(text: str) -> bool:
-    t = text.strip().upper()
-    return t.startswith("PÉRIODE") or t.startswith("PERIOD")
+    return bool(re.match(r'^(PÉRIODE|PERIOD)\s*\d+', text.strip(), re.IGNORECASE))
 
 
 def _extract_period_num(text: str) -> int:

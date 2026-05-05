@@ -23,8 +23,9 @@ from generators.docx_translator import _PROMPT as DEFAULT_TRANSLATE_PROMPT
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 PROMPTS_FILE = Path(__file__).parent / "prompts.json"
-FR_DOCX = OUTPUT_DIR / "Acacia_MHM_FR.docx"
-EN_DOCX = OUTPUT_DIR / "Acacia_MHM_EN.docx"
+FR_DOCX       = OUTPUT_DIR / "Acacia_MHM_FR.docx"
+EN_DOCX       = OUTPUT_DIR / "Acacia_MHM_EN.docx"
+FAITHFUL_DOCX = OUTPUT_DIR / "MHM_faithful.docx"
 
 PDF_OPTIONS = [
     ("Intro",    SOURCE_PDFS[0]),
@@ -238,7 +239,7 @@ st.caption("Select documents in the sidebar, then describe what you want or clic
 
 # ── Downloads (always visible if files exist) ─────────────────────────────────
 
-if FR_DOCX.exists() or EN_DOCX.exists():
+if FR_DOCX.exists() or EN_DOCX.exists() or FAITHFUL_DOCX.exists():
     st.markdown("""
 <div style="
     background: linear-gradient(135deg, #f0fff4, #e6ffee);
@@ -251,12 +252,16 @@ if FR_DOCX.exists() or EN_DOCX.exists():
     ✅ Documents ready — click to download
 </div>
 """, unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
+        if FAITHFUL_DOCX.exists():
+            st.download_button("📄 Download faithful reproduction (.docx)", FAITHFUL_DOCX.read_bytes(),
+                               "MHM_faithful.docx", DOCX_MIME, key="dl_faithful_top", use_container_width=True)
+    with c2:
         if FR_DOCX.exists():
             st.download_button("📄 Download French version (.docx)", FR_DOCX.read_bytes(),
                                "Acacia_MHM_FR.docx", DOCX_MIME, key="dl_fr_top", use_container_width=True)
-    with c2:
+    with c3:
         if EN_DOCX.exists():
             st.download_button("📄 Download English version (.docx)", EN_DOCX.read_bytes(),
                                "Acacia_MHM_EN.docx", DOCX_MIME, key="dl_en_top", use_container_width=True)
@@ -464,6 +469,18 @@ def _run_edit(pages: list[dict], pdf_paths: list[Path]) -> list[dict]:
     with st.spinner("Running editorial cleanup…"):
         return edit_pages(pages, doc_name, EDITED_DIR, system_prompt=prompt, force=force_edit)
 
+def _run_build_faithful(pages: list[dict]) -> None:
+    from generators.docx_generator import build_faithful_document
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    with st.spinner("Building faithful reproduction…"):
+        build_faithful_document(
+            pages=pages,
+            output_path=FAITHFUL_DOCX,
+            title="Guide MHM — Reproduction fidèle",
+            subtitle="Petite Section / Moyenne Section",
+            lang="fr-FR",
+        )
+
 def _run_build_fr(pages: list[dict]) -> None:
     from generators.docx_generator import build_document
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -516,17 +533,20 @@ if run_all and selected:
             st.stop()
         all_pages = p
 
+    _run_build_faithful(all_pages)
+    st.success("Stage 2 complete — faithful reproduction built")
+
     build_pages = all_pages
 
     if do_edit:
         build_pages = _run_edit(all_pages, selected)
-        st.success("Stage 2 complete — editorial cleanup done")
+        st.success("Stage 3 complete — editorial cleanup done")
 
     _run_build_fr(build_pages)
-    st.success("Stage 3 complete — French document built")
+    st.success("Stage 4 complete — French document built")
 
     if do_translate:
         _run_translate()
-        st.success("Stage 4 complete — English document translated")
+        st.success("Stage 5 complete — English document translated")
 
     st.rerun()

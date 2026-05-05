@@ -39,6 +39,8 @@ Each image is one page, in order. Return ALL content as JSON:
     {{
       "page_num": {start_page},
       "blocks": [
+        {{"type": "activity_title", "periode_num": 1, "week": "S1", "activity_label": "Activité ritualisée", "activity_type": "ritualisee", "classes": ["PS", "MS"]}},
+        {{"type": "subtitle_badge", "badge_text": "CHAQUE JOUR", "title_text": "Le rituel de l'étiquette d'appel", "activity_type": "ritualisee"}},
         {{"type": "heading", "level": 1, "text": "..."}},
         {{"type": "heading", "level": 2, "text": "..."}},
         {{"type": "heading", "level": 3, "text": "..."}},
@@ -51,13 +53,37 @@ Each image is one page, in order. Return ALL content as JSON:
 }}
 
 Block rules:
-- heading 1: largest titles (period titles, major section names)
-- heading 2: sub-section titles AND all pedagogical section labels — Avant-propos, SOMMAIRE, Semaine N, Objectifs, Déroulement, Matériel, Différenciation, Ce qu'il faut savoir, Ressources, Matériel de classe, Remarques, and any equivalent section header
-- heading 3: numbered sub-sections (e.g. "1. Réflexions générales"), activity names, PS/MS labels
+- activity_title: USE THIS ONLY for the visual banner element — a wide colored pill/banner that spans the page, with a white box on the left showing "Période N" (small) and "S[week]" (large) in the period color, and the activity type name in white on a colored background.
+  Fields:
+  • periode_num: integer (1–5)
+  • week: string like "S1", "S2", etc.
+  • activity_label: exact French label as written ("Activité ritualisée", "Apprentissages guidés", "Autonomie et semi-autonomie")
+  • activity_type: one of "ritualisee", "guidee", "autonomie"
+  • classes: array containing "PS" and/or "MS" — only include classes shown as badges on that specific banner
+  ⚠️ DO NOT use activity_title for rows in Programmation/summary tables — those must remain as table blocks. The Programmation overview page shows a grid of all weeks (SEMAINE 1–5) × all activity types (ritualisées, guidés, autonomie) — extract the ENTIRE grid as ONE table block with column headers and week rows.
+  ⚠️ DO NOT use activity_title when the activity type appears as a simple text heading without the visual banner design.
+  ⚠️ Page running headers (small "Période N" text printed at the top of each page) must be IGNORED completely — do not extract them as content, and do not use them for periode_num. Only use the periode_num that is clearly part of the main visual activity banner on the page.
+  ⚠️ DO NOT use activity_title for individual activity names like "Le coin marchande", "Un peu/beaucoup", "Activité 1", "Activité 2" — those are headings, not activity banners.
+
+- subtitle_badge: USE THIS for day/timing badges — a small colored pill followed by a subtitle title on the same line.
+  Fields:
+  • badge_text: MUST be a timing word ONLY — "CHAQUE JOUR", "JOUR 1", "JOUR 2", "JOUR 3", "JOUR 4", "JOUR 5", or similar. NEVER put "PS", "MS", or "PS MS" here — if PS or MS appears in a badge-like position before a subtitle, use a heading level 3 block instead.
+  • title_text: the activity name that follows the badge on the same line (do not include PS/MS in title_text either — those go in the parent activity_title classes field)
+  • activity_type: must match the parent activity_title's activity_type ("ritualisee", "guidee", or "autonomie")
+
+- heading 1: largest titles (period titles, major section names) — NOT used for activity banners
+- heading 2: sub-section titles AND all pedagogical section labels — Avant-propos, SOMMAIRE, Objectifs, Déroulement, Matériel, Différenciation, Ce qu'il faut savoir, Ressources, Matériel de classe, Remarques
+- heading 3: numbered sub-sections, PS/MS labels when standalone
 - paragraph: body text; each visual paragraph in the original MUST be a separate block — NEVER merge multiple paragraphs into one
   BOLD: you MUST wrap every word or phrase that appears in bold font in the PDF with **double asterisks** — e.g. **Guide de la méthode**, **PS**, **un jeu par période**. This is critical: scan every line for bold text and mark it. Do not skip any bold words.
 - table: full 2D array — preserve ALL rows/columns, PS/MS labels, week labels, sub-headers
 - caption: text immediately below/beside an illustration
+
+STYLE CAPTURE (add only when color is visually present — skip for plain black text on white):
+- For any block with a visible colored background, add "bg_color": one of: "yellow", "blue", "green", "orange", "purple", "red", "grey", or a hex code like "#F5C842". Also add "text_color": "white" or "black".
+- For table blocks, add "col_colors": ["color", ...] — one entry per column representing the column header background. Use "none" for uncolored columns.
+- Example with style: {{"type": "heading", "level": 2, "text": "Activités ritualisées", "bg_color": "yellow", "text_color": "white"}}
+- Example table: {{"type": "table", "data": [...], "col_colors": ["none", "yellow", "blue", "green"]}}
 
 Rules:
 - One page object per image, in order, starting from page_num {start_page}

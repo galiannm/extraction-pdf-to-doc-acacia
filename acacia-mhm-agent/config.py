@@ -51,3 +51,22 @@ class Colors:
 class Fonts:
     HEADING  = "Mali"
     BODY     = "Nunito"
+
+class FaithfulFonts:
+    HEADING  = "Calibri"
+    BODY     = "Calibri"
+
+# MHM pedagogical color mapping
+PERIOD_COLORS = {
+    1: ( 66, 152, 181),   # Blue
+    2: (214,  51, 132),   # Magenta
+    3: (155,  89, 182),   # Purple
+    4: ( 39, 174,  96),   # Green
+    5: (245, 200,  66),   # Yellow
+}
+
+ACTIVITY_COLORS = {
+    "ritualisee": (245, 166,  35),   # Orange-yellow
+    "guidee":     ( 66, 152, 181),   # Blue
+    "autonomie":  (141, 198,  63),   # Green
+}
