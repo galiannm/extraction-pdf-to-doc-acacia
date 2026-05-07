@@ -194,10 +194,11 @@ def add_activity_title_bar(
     # Period / week cell — white background, period-colored text
     cell = table.cell(0, 0)
     _shade_cell(cell, "FFFFFF")
+    cell.vertical_alignment = WD_ALIGN_PARAGRAPH.CENTER
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_before = Pt(3)
-    p.paragraph_format.space_after  = Pt(3)
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after  = Pt(0)
     r1 = p.add_run(f"Période {periode_num}\n")
     r1.font.name  = _fonts.BODY
     r1.font.size  = Pt(7)
@@ -214,10 +215,11 @@ def add_activity_title_bar(
     # Activity type cell — activity color background, white text
     cell = table.cell(0, 1)
     _shade_cell(cell, _rgb_hex(a_color))
+    cell.vertical_alignment = WD_ALIGN_PARAGRAPH.CENTER
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    p.paragraph_format.space_before = Pt(6)
-    p.paragraph_format.space_after  = Pt(6)
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after  = Pt(0)
     p.paragraph_format.left_indent  = Pt(10)
     run = p.add_run(activity_label)
     run.font.name  = _fonts.HEADING
@@ -231,10 +233,11 @@ def add_activity_title_bar(
     for i, cls in enumerate(badges):
         cell = table.cell(0, 2 + i)
         _shade_cell(cell, _rgb_hex(badge_colors[cls]))
+        cell.vertical_alignment = WD_ALIGN_PARAGRAPH.CENTER
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(6)
-        p.paragraph_format.space_after  = Pt(6)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after  = Pt(0)
         run = p.add_run(cls)
         run.font.name  = _fonts.HEADING
         run.font.size  = Pt(14)
@@ -430,7 +433,10 @@ def _fix_soft_hyphens(text: str) -> str:
 
 def _is_bullet_line(line: str) -> bool:
     s = line.strip()
-    return s.startswith('•') or bool(re.match(r'^-\s', s))
+    return bool(re.match(r'^[•\-–—]\s', s))
+
+def _is_numbered_line(line: str) -> bool:
+    return bool(re.match(r'^\d+[\.\)]\s', line.strip()))
 
 
 # ── Text blocks ───────────────────────────────────────────────────────────────
@@ -438,6 +444,10 @@ def _is_bullet_line(line: str) -> bool:
 def add_section_label(doc: Document, text: str, lang: str = 'fr-FR') -> None:
     """Render Objectif / Déroulement / Différenciation etc. as bold + underline black."""
     clean = re.sub(r'\*\*(.+?)\*\*', r'\1', _fix_soft_hyphens(text)).strip()
+    # Prefix icon for Vocabulaire / Vigilance sections
+    t_lower = clean.lower()
+    if (t_lower.startswith('vocabulaire') or 'vigilance' in t_lower) and not clean.startswith('💡'):
+        clean = '💡 ' + clean
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(8)
     p.paragraph_format.space_after  = Pt(3)
@@ -470,6 +480,60 @@ def add_info_box(doc: Document, text: str, lang: str = 'fr-FR') -> None:
     _set_run_lang(run, lang)
     # Apply blue border to the table
     _set_table_border_color(table, _rgb_hex(Colors.BLUE))
+    doc.add_paragraph()
+
+
+def add_section_box(
+    doc: Document,
+    label: str,
+    content_blocks: list[dict],
+    border_color: tuple,
+    lang: str = 'fr-FR',
+) -> None:
+    """Render a section box (Ce qu'il faut savoir / Différenciation): label + body inside a colored-border box."""
+    table = doc.add_table(rows=1, cols=1)
+    table.style = "Table Grid"
+    content_tw = int(CONTENT_WIDTH * 1440 / 914400)
+    _set_table_col_widths(table, [content_tw])
+    cell = table.cell(0, 0)
+
+    # Label paragraph
+    p = cell.paragraphs[0]
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after  = Pt(4)
+    p.paragraph_format.left_indent  = Pt(6)
+    run = p.add_run(label.strip())
+    run.font.name  = _fonts.BODY
+    run.font.size  = Pt(10)
+    run.font.bold  = True
+    run.font.color.rgb = RGBColor(*border_color)
+    _set_run_lang(run, lang)
+
+    # Content paragraphs inside the box
+    for block in content_blocks:
+        btype = block.get('type', '')
+        if btype not in ('paragraph', 'caption'):
+            continue
+        text = _sanitize_text((block.get('text') or '').strip())
+        if not text:
+            continue
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            cp = cell.add_paragraph()
+            cp.paragraph_format.space_before = Pt(1)
+            cp.paragraph_format.space_after  = Pt(1)
+            if _is_bullet_line(line) or _is_numbered_line(line):
+                cp.paragraph_format.left_indent = Pt(16)
+                cp.paragraph_format.first_line_indent = Pt(-10)
+                clean = re.sub(r'^[•\-–—]\s*', '', line) if _is_bullet_line(line) else line
+                _add_highlighted_runs(cp, ('•  ' if _is_bullet_line(line) else '') + clean, 10, lang)
+            else:
+                cp.paragraph_format.left_indent = Pt(6)
+                _add_highlighted_runs(cp, line, 10, lang)
+
+    _set_table_border_color(table, _rgb_hex(border_color))
     doc.add_paragraph()
 
 
@@ -523,44 +587,56 @@ def add_paragraph(doc: Document, text: str, lang: str = 'fr-FR') -> None:
     if not lines:
         return
 
-    has_bullets = any(_is_bullet_line(l) for l in lines)
+    has_bullets  = any(_is_bullet_line(l) for l in lines)
+    has_numbered = any(_is_numbered_line(l) for l in lines)
 
-    if not has_bullets:
+    if not has_bullets and not has_numbered:
         _add_body_para(doc, ' '.join(lines), lang)
         return
 
-    # Group lines: each bullet + continuations → one bullet chunk;
-    # non-bullet runs → body chunk.
-    chunks: list[tuple[bool, str]] = []
-    current_bullet = None
+    # Group lines: each bullet/numbered item + continuations → one chunk;
+    # non-list runs → body chunk.
+    chunks: list[tuple[str, str]] = []   # (kind, text): kind = "bullet"|"numbered"|"body"
+    current_kind: str | None = None
     current_lines: list[str] = []
 
     for line in lines:
         if _is_bullet_line(line):
             if current_lines:
-                chunks.append((bool(current_bullet), ' '.join(current_lines)))
-            current_bullet = True
-            current_lines = [re.sub(r'^[•\-]\s*', '', line)]
+                chunks.append((current_kind or "body", ' '.join(current_lines)))
+            current_kind = "bullet"
+            current_lines = [re.sub(r'^[•\-–—]\s*', '', line)]
+        elif _is_numbered_line(line):
+            if current_lines:
+                chunks.append((current_kind or "body", ' '.join(current_lines)))
+            current_kind = "numbered"
+            current_lines = [line.strip()]   # keep the number prefix
         else:
-            if current_bullet is True:
-                current_lines.append(line)
+            if current_kind in ("bullet", "numbered"):
+                current_lines.append(line)  # continuation of previous item
             else:
-                if current_bullet is False:
+                if current_kind == "body":
                     current_lines.append(line)
                 else:
-                    current_bullet = False
+                    current_kind = "body"
                     current_lines = [line]
 
     if current_lines:
-        chunks.append((bool(current_bullet), ' '.join(current_lines)))
+        chunks.append((current_kind or "body", ' '.join(current_lines)))
 
-    for is_bullet, chunk_text in chunks:
-        if is_bullet:
+    for kind, chunk_text in chunks:
+        if kind == "bullet":
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Pt(18)
             p.paragraph_format.first_line_indent = Pt(-12)
             p.paragraph_format.space_after = Pt(3)
             _add_highlighted_runs(p, '•  ' + chunk_text, 11, lang)
+        elif kind == "numbered":
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Pt(18)
+            p.paragraph_format.first_line_indent = Pt(-12)
+            p.paragraph_format.space_after = Pt(3)
+            _add_highlighted_runs(p, chunk_text, 11, lang)
         else:
             _add_body_para(doc, chunk_text, lang)
 

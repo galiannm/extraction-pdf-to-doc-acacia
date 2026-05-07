@@ -19,6 +19,7 @@ from templates.acacia_styles import (
     add_heading,
     add_section_label,
     add_info_box,
+    add_section_box,
     add_paragraph,
     add_indented_paragraph,
     add_toc_table,
@@ -54,6 +55,9 @@ def build_document(
         blocks = _mark_qr_labels(page["blocks"])
         for block in blocks:
             prev_was_bullet = _render_block(doc, block, lang, prev_was_bullet)
+        # Page break after the cover/objectives page so Programmation starts fresh
+        if page.get("page_num") == 1:
+            doc.add_page_break()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
@@ -79,10 +83,66 @@ def build_faithful_document(
 
 # ── Page pre-processing ───────────────────────────────────────────────────────
 
+def _is_differenciation(text: str) -> bool:
+    t = text.lower().lstrip('💡 ')
+    return t.startswith('différenciation') or t.startswith('differenciation')
+
+# Block types that mark the start of a new section — stop collecting box content
+_BOX_STOP_TYPES = {'heading', 'activity_title', 'subtitle_badge', 'section_box',
+                   'toc_table', 'image_placeholder'}
+
+
+def _group_section_boxes(blocks: list[dict]) -> list[dict]:
+    """
+    Group "Ce qu'il faut savoir" and "Différenciation" headings with their
+    following content blocks into a single section_box block.
+    """
+    result = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        if block.get('type') != 'heading':
+            result.append(block)
+            i += 1
+            continue
+
+        text = (block.get('text') or '').strip()
+
+        if _is_savoir_box(text):
+            border = 'blue'
+        elif _is_differenciation(text):
+            border = 'orange'
+        else:
+            result.append(block)
+            i += 1
+            continue
+
+        # Collect content blocks until the next section boundary
+        content: list[dict] = []
+        j = i + 1
+        while j < len(blocks):
+            b = blocks[j]
+            if b.get('type') in _BOX_STOP_TYPES:
+                break
+            content.append(b)
+            j += 1
+
+        result.append({
+            'type': 'section_box',
+            'label': text,
+            'border_color': border,
+            'content_blocks': content,
+        })
+        i = j  # skip consumed content blocks
+
+    return result
+
+
 def _preprocess_pages(pages: list[dict]) -> list[dict]:
     result = []
     for page in pages:
         blocks = _merge_programmation_blocks(page.get("blocks", []))
+        blocks = _group_section_boxes(blocks)
         new_page = dict(page)
         new_page["blocks"] = blocks
         result.append(new_page)
@@ -329,6 +389,18 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
     if btype in ("qr_label", "caption"):
         return False
 
+    if btype == "section_box":
+        from config import Colors
+        border_color = Colors.BLUE if block.get("border_color") == "blue" else Colors.ORANGE
+        add_section_box(
+            doc,
+            label=block.get("label", ""),
+            content_blocks=block.get("content_blocks", []),
+            border_color=border_color,
+            lang=lang,
+        )
+        return False
+
     if btype == "activity_title":
         week          = block.get("week") or ""
         periode_num   = block.get("periode_num")
@@ -513,8 +585,8 @@ def _is_section_label(text: str) -> bool:
     return any(clean.startswith(s) for s in _SECTION_LABELS)
 
 def _is_savoir_box(text: str) -> bool:
-    t = text.lower()
-    return "ce qu'il faut savoir" in t or "ce qu'il faut savoir" in t
+    t = text.lower().replace('’', "'").replace('‘', "'")
+    return "ce qu'il faut savoir" in t
 
 def _is_period_line(text: str) -> bool:
     return bool(re.match(r'^(PÉRIODE|PERIOD)\s*\d+', text.strip(), re.IGNORECASE))
