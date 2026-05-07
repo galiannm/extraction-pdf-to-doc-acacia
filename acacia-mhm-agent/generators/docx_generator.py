@@ -20,6 +20,10 @@ from templates.acacia_styles import (
     add_section_label,
     add_info_box,
     add_section_box,
+    add_obj_mat_table,
+    add_materiel_table,
+    add_prog_banner,
+    add_image_table,
     add_paragraph,
     add_indented_paragraph,
     add_toc_table,
@@ -138,11 +142,214 @@ def _group_section_boxes(blocks: list[dict]) -> list[dict]:
     return result
 
 
+def _heading_norm(text: str) -> str:
+    return re.sub(r'\*\*', '', text or '').lower().replace('’', "'").replace('‘', "'").strip()
+
+def _is_objectif_heading(text: str) -> bool:
+    return _heading_norm(text).startswith('objectif')
+
+def _is_materiel_heading(text: str) -> bool:
+    t = _heading_norm(text)
+    return t.startswith('matériel') or t.startswith('materiel')
+
+def _is_weekly_materiel(blocks: list, pos: int) -> bool:
+    """True if the heading at pos is the weekly MATÉRIEL section (followed by PS/MS headings)."""
+    for b in blocks[pos+1:pos+4]:
+        if b.get('type') != 'heading':
+            continue
+        t = _heading_norm(b.get('text', ''))
+        if t in ('ps', 'ms') or t.startswith('ps ') or t.startswith('ms ') or t.startswith('ps—') or t.startswith('ms—'):
+            return True
+    return False
+
+_MAT_STOP_TYPES = {'activity_title', 'subtitle_badge', 'section_box', 'toc_table'}
+
+
+def _group_obj_mat(blocks: list[dict]) -> list[dict]:
+    """
+    Group adjacent Objectif → (optional section_box) → Matériel into a single
+    obj_mat_table block. The section_box (if any) is emitted before the table.
+    """
+    result = []
+    i = 0
+    while i < len(blocks):
+        b = blocks[i]
+        if b.get('type') != 'heading' or not _is_objectif_heading(b.get('text', '')):
+            result.append(b)
+            i += 1
+            continue
+
+        obj_label = b.get('text', '')
+        obj_content: list[dict] = []
+        interstitials: list[dict] = []
+        j = i + 1
+
+        # Collect objectif content until heading or section_box
+        while j < len(blocks):
+            nb = blocks[j]
+            if nb.get('type') == 'heading':
+                break
+            if nb.get('type') == 'section_box':
+                interstitials.append(nb)
+                j += 1
+                break
+            obj_content.append(nb)
+            j += 1
+
+        # Skip any further section_boxes between objectif and matériel
+        while j < len(blocks) and blocks[j].get('type') == 'section_box':
+            interstitials.append(blocks[j])
+            j += 1
+
+        # Check if the next heading is Matériel (and NOT the weekly MATÉRIEL)
+        if (j < len(blocks) and
+                blocks[j].get('type') == 'heading' and
+                _is_materiel_heading(blocks[j].get('text', '')) and
+                not _is_weekly_materiel(blocks, j)):
+
+            mat_label = blocks[j].get('text', '')
+            mat_content: list[dict] = []
+            k = j + 1
+            while k < len(blocks):
+                mb = blocks[k]
+                if mb.get('type') in {'heading'} | _MAT_STOP_TYPES:
+                    break
+                mat_content.append(mb)
+                k += 1
+
+            result.extend(interstitials)
+            result.append({
+                'type': 'obj_mat_table',
+                'obj_label': obj_label,
+                'obj_blocks': obj_content,
+                'mat_label': mat_label,
+                'mat_blocks': mat_content,
+            })
+            i = k
+            continue
+
+        # No adjacent Matériel found — emit as-is
+        result.append(b)
+        result.extend(obj_content)
+        result.extend(interstitials)
+        i = j
+
+    return result
+
+
+def _group_materiel_table(blocks: list[dict]) -> list[dict]:
+    """
+    Detect the weekly MATÉRIEL overview section (MATÉRIEL heading followed by PS/MS
+    headings) and convert it into a structured materiel_table block.
+    """
+    result = []
+    i = 0
+    while i < len(blocks):
+        b = blocks[i]
+        if (b.get('type') != 'heading' or
+                not _is_materiel_heading(b.get('text', '')) or
+                not _is_weekly_materiel(blocks, i)):
+            result.append(b)
+            i += 1
+            continue
+
+        # Collect all content until the next major boundary
+        sections: dict[str, list] = {}
+        current_key: str | None = None
+        j = i + 1
+
+        while j < len(blocks):
+            nb = blocks[j]
+            if nb.get('type') in _MAT_STOP_TYPES | {'activity_title', 'subtitle_badge'}:
+                break
+            if nb.get('type') == 'heading':
+                t = _heading_norm(nb.get('text', ''))
+                # Split-mode: "ps — ressources", "ms — matériel de classe", etc.
+                if t.startswith('ps') and 'ressource' in t:
+                    current_key = 'ps_ressources'
+                elif t.startswith('ms') and 'ressource' in t:
+                    current_key = 'ms_ressources'
+                elif t.startswith('ps') and ('matériel' in t or 'materiel' in t or 'classe' in t):
+                    current_key = 'ps_classe'
+                elif t.startswith('ms') and ('matériel' in t or 'materiel' in t or 'classe' in t):
+                    current_key = 'ms_classe'
+                # Legacy: standalone PS/MS/Ressources headings
+                elif t in ('ps', 'ms', 'ressource', 'ressources'):
+                    current_key = t
+                elif t.startswith('matériel de') or t.startswith('materiel de'):
+                    current_key = 'mat_classe'
+                else:
+                    break
+                sections.setdefault(current_key, [])
+            elif nb.get('type') == 'paragraph' and current_key:
+                sections[current_key].append(nb)
+            j += 1
+
+        result.append({
+            'type': 'materiel_table',
+            'ps_ressources':     sections.get('ps_ressources', []),
+            'ms_ressources':     sections.get('ms_ressources', []),
+            'ps_classe':         sections.get('ps_classe', []),
+            'ms_classe':         sections.get('ms_classe', []),
+            # Legacy fallback for pages not yet re-extracted
+            'ressources_blocks': sections.get('ressource', sections.get('ressources', [])),
+            'classe_blocks':     sections.get('mat_classe', []),
+        })
+        i = j
+
+    return result
+
+
+def _group_image_tables(blocks: list[dict]) -> list[dict]:
+    """
+    Group consecutive caption and image_placeholder blocks into a single
+    image_table block rendered as a 1-row multi-column table.
+    Skips page-number captions and very short/empty captions.
+    """
+    _IMAGE_TYPES = {'caption', 'image_placeholder'}
+
+    def _caption_text(b: dict) -> str:
+        raw = (b.get('text') or b.get('description') or '').strip()
+        # Strip leading ► / ▸ arrows
+        raw = re.sub(r'^[►▸]\s*', '', raw)
+        # Skip pure page numbers
+        if re.fullmatch(r'\d{1,3}', raw):
+            return ''
+        return raw
+
+    result = []
+    i = 0
+    while i < len(blocks):
+        b = blocks[i]
+        if b.get('type') not in _IMAGE_TYPES:
+            result.append(b)
+            i += 1
+            continue
+
+        # Collect consecutive image/caption blocks
+        descriptions = []
+        j = i
+        while j < len(blocks) and blocks[j].get('type') in _IMAGE_TYPES:
+            text = _caption_text(blocks[j])
+            if text and len(text) > 4:
+                descriptions.append(text)
+            j += 1
+
+        if descriptions:
+            result.append({'type': 'image_table', 'descriptions': descriptions})
+        i = j
+
+    return result
+
+
 def _preprocess_pages(pages: list[dict]) -> list[dict]:
     result = []
     for page in pages:
         blocks = _merge_programmation_blocks(page.get("blocks", []))
         blocks = _group_section_boxes(blocks)
+        blocks = _group_obj_mat(blocks)
+        blocks = _group_materiel_table(blocks)
+        blocks = _group_image_tables(blocks)
         new_page = dict(page)
         new_page["blocks"] = blocks
         result.append(new_page)
@@ -244,8 +451,21 @@ def _merge_programmation_blocks(blocks: list[dict]) -> list[dict]:
         rows.append(row)
 
     col_colors = ["none"] + [_ATYPE_COLORS.get(a, "none") for a in present]
-    table_block = {"type": "table", "data": rows, "col_colors": col_colors}
-    return non_activity + [table_block] + trailing
+
+    # Extract periode_num from the first activity_title block in the original blocks
+    periode_num = next(
+        (b.get("periode_num", 1) for b in blocks if b.get("type") == "activity_title"),
+        1,
+    )
+
+    overview_title = {
+        "type": "prog_banner",
+        "periode_num": periode_num,
+        "label": "Programmation",
+        "classes": ["PS", "MS"],
+    }
+    table_block = {"type": "table", "data": rows, "col_colors": col_colors, "compact": True}
+    return non_activity + [overview_title, table_block] + trailing
 
 
 # ── TOC pre-processing ────────────────────────────────────────────────────────
@@ -389,6 +609,34 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
     if btype in ("qr_label", "caption"):
         return False
 
+    if btype == "image_table":
+        add_image_table(doc, block.get("descriptions", []), lang=lang)
+        return False
+
+    if btype == "obj_mat_table":
+        add_obj_mat_table(
+            doc,
+            obj_label=block.get("obj_label", ""),
+            obj_blocks=block.get("obj_blocks", []),
+            mat_label=block.get("mat_label", ""),
+            mat_blocks=block.get("mat_blocks", []),
+            lang=lang,
+        )
+        return False
+
+    if btype == "materiel_table":
+        add_materiel_table(
+            doc,
+            ps_ressources=block.get("ps_ressources", []),
+            ms_ressources=block.get("ms_ressources", []),
+            ps_classe=block.get("ps_classe", []),
+            ms_classe=block.get("ms_classe", []),
+            ressources_blocks=block.get("ressources_blocks", []),
+            classe_blocks=block.get("classe_blocks", []),
+            lang=lang,
+        )
+        return False
+
     if btype == "section_box":
         from config import Colors
         border_color = Colors.BLUE if block.get("border_color") == "blue" else Colors.ORANGE
@@ -401,16 +649,26 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
         )
         return False
 
+    if btype == "prog_banner":
+        add_prog_banner(
+            doc,
+            periode_num=block.get("periode_num", 1),
+            label=block.get("label", "Programmation"),
+            classes=block.get("classes", ["PS", "MS"]),
+        )
+        return False
+
     if btype == "activity_title":
         week          = block.get("week") or ""
         periode_num   = block.get("periode_num")
         activity_type = block.get("activity_type", "")
         activity_label = block.get("activity_label", "")
-        # Only render as title bar when all fields are valid AND the label is one of the 3 main types
-        if (week and periode_num and
-                activity_type in ("ritualisee", "guidee", "autonomie") and
-                re.search(r'\d', str(week)) and
-                _is_main_activity_label(activity_label)):
+        label_lower   = activity_label.lower()
+
+        if (week and periode_num and re.search(r'\d', str(week)) and
+                _is_main_activity_label(activity_label) and
+                activity_type in ("ritualisee", "guidee", "autonomie")):
+            # Standard activity banner
             add_activity_title_bar(
                 doc,
                 periode_num=int(periode_num),
@@ -418,6 +676,16 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
                 activity_label=activity_label,
                 activity_type=activity_type,
                 classes=block.get("classes", []),
+            )
+        elif (week and periode_num and re.search(r'\d', str(week)) and
+              ('programmation' in label_lower or 'organisation' in label_lower)):
+            # Programmation / Organisation des ateliers banner — uses period color
+            add_prog_banner(
+                doc,
+                periode_num=int(periode_num),
+                label=activity_label,
+                week=week,
+                classes=block.get("classes", ["PS", "MS"]),
             )
         elif activity_label:
             add_heading(doc, activity_label, level=2, lang=lang)
@@ -497,7 +765,8 @@ def _render_block(doc: Document, block: dict, lang: str, prev_was_bullet: bool =
 
     elif btype == "table":
         data = block.get("data", [])
-        add_table(doc, data, col_colors=block.get("col_colors"))
+        add_table(doc, data, col_colors=block.get("col_colors"),
+                  compact=block.get("compact", False))
         return False
 
     elif btype == "image":

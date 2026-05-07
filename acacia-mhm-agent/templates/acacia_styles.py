@@ -166,6 +166,78 @@ def _normalize_week(week: str) -> str:
     return str(week)
 
 
+def add_prog_banner(
+    doc: Document,
+    periode_num: int,
+    label: str,
+    week: str = "",
+    classes: list[str] | None = None,
+) -> None:
+    """Banner for Programmation / Organisation des ateliers — uses period color."""
+    p_color = PERIOD_COLORS.get(periode_num, Colors.BLUE)
+    classes = classes or ["PS", "MS"]
+    badges = [c for c in classes if c in ("PS", "MS")]
+
+    n_cols = 2 + len(badges) if week else 1 + len(badges)
+    table = doc.add_table(rows=1, cols=n_cols)
+    table.style = "Table Grid"
+
+    content_tw = int(CONTENT_WIDTH * 1440 / 914400)
+    badge_w    = int(0.55 * 1440)
+    period_w   = int(0.9 * 1440) if week else 0
+    label_w    = content_tw - period_w - badge_w * len(badges)
+    widths = ([period_w] if week else []) + [label_w] + [badge_w] * len(badges)
+    _set_table_col_widths(table, widths)
+
+    col = 0
+
+    if week:
+        # Period / week cell
+        cell = table.cell(0, col)
+        _shade_cell(cell, "FFFFFF")
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after  = Pt(0)
+        r1 = p.add_run(f"Période {periode_num}\n")
+        r1.font.name = _fonts.BODY; r1.font.size = Pt(7); r1.font.bold = True
+        r1.font.color.rgb = RGBColor(*p_color); _set_run_lang(r1, 'fr-FR')
+        r2 = p.add_run(_normalize_week(week))
+        r2.font.name = _fonts.HEADING; r2.font.size = Pt(20); r2.font.bold = True
+        r2.font.color.rgb = RGBColor(*p_color); _set_run_lang(r2, 'fr-FR')
+        col += 1
+
+    # Label cell — period color background
+    cell = table.cell(0, col)
+    _shade_cell(cell, _rgb_hex(p_color))
+    p = cell.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after  = Pt(0)
+    p.paragraph_format.left_indent  = Pt(10)
+    run = p.add_run(label)
+    run.font.name = _fonts.HEADING; run.font.size = Pt(20); run.font.bold = True
+    run.font.color.rgb = RGBColor(*Colors.WHITE); _set_run_lang(run, 'fr-FR')
+    col += 1
+
+    # Badge cells
+    badge_colors = {"PS": Colors.PS_BADGE, "MS": Colors.MS_BADGE}
+    for cls in badges:
+        cell = table.cell(0, col)
+        _shade_cell(cell, _rgb_hex(badge_colors[cls]))
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after  = Pt(0)
+        run = p.add_run(cls)
+        run.font.name = _fonts.HEADING; run.font.size = Pt(14); run.font.bold = True
+        run.font.color.rgb = RGBColor(*Colors.WHITE); _set_run_lang(run, 'fr-FR')
+        col += 1
+
+    _remove_table_borders(table)
+    doc.add_paragraph()
+
+
 def add_activity_title_bar(
     doc: Document,
     periode_num: int,
@@ -483,6 +555,180 @@ def add_info_box(doc: Document, text: str, lang: str = 'fr-FR') -> None:
     doc.add_paragraph()
 
 
+def _add_cell_content_blocks(cell, blocks: list[dict], size: int, lang: str) -> None:
+    """Add paragraph blocks into a table cell, handling bullets and bold markers."""
+    for block in blocks:
+        if block.get('type') not in ('paragraph', 'caption'):
+            continue
+        text = _sanitize_text((block.get('text') or '').strip())
+        if not text:
+            continue
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            cp = cell.add_paragraph()
+            cp.paragraph_format.space_before = Pt(1)
+            cp.paragraph_format.space_after  = Pt(1)
+            if _is_bullet_line(line) or _is_numbered_line(line):
+                cp.paragraph_format.left_indent = Pt(14)
+                cp.paragraph_format.first_line_indent = Pt(-10)
+                clean = re.sub(r'^[•\-–—]\s*', '', line) if _is_bullet_line(line) else line
+                _add_highlighted_runs(cp, ('•  ' if _is_bullet_line(line) else '') + clean, size, lang)
+            else:
+                cp.paragraph_format.left_indent = Pt(4)
+                _add_highlighted_runs(cp, line, size, lang)
+
+
+def _add_keyword_label(cell, text: str, keyword_pattern: str, lang: str) -> None:
+    """Add a label para to a cell — underlines only the keyword, bold for the rest."""
+    clean = re.sub(r'\*\*(.+?)\*\*', r'\1', text).strip()
+    p = cell.paragraphs[0]
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after  = Pt(4)
+    p.paragraph_format.left_indent  = Pt(4)
+    m = re.match(keyword_pattern, clean, re.IGNORECASE)
+    if m:
+        keyword = m.group(0)
+        rest    = clean[m.end():]
+        r1 = p.add_run(keyword)
+        r1.font.name      = _fonts.BODY
+        r1.font.size      = Pt(11)
+        r1.font.bold      = True
+        r1.font.underline = True
+        r1.font.color.rgb = RGBColor(*Colors.DARK_GREY)
+        _set_run_lang(r1, lang)
+        if rest.strip():
+            r2 = p.add_run(rest)
+            r2.font.name  = _fonts.BODY
+            r2.font.size  = Pt(11)
+            r2.font.bold  = True
+            r2.font.color.rgb = RGBColor(*Colors.DARK_GREY)
+            _set_run_lang(r2, lang)
+    else:
+        run = p.add_run(clean)
+        run.font.name      = _fonts.BODY
+        run.font.size      = Pt(11)
+        run.font.bold      = True
+        run.font.underline = True
+        run.font.color.rgb = RGBColor(*Colors.DARK_GREY)
+        _set_run_lang(run, lang)
+
+
+def add_obj_mat_table(
+    doc: Document,
+    obj_label: str,
+    obj_blocks: list[dict],
+    mat_label: str,
+    mat_blocks: list[dict],
+    lang: str = 'fr-FR',
+) -> None:
+    """2-column borderless table: Objectif (left) | Matériel (right)."""
+    table = doc.add_table(rows=1, cols=2)
+    table.style = "Table Grid"
+    content_tw = int(CONTENT_WIDTH * 1440 / 914400)
+    half = content_tw // 2
+    _set_table_col_widths(table, [half, content_tw - half])
+
+    left  = table.cell(0, 0)
+    right = table.cell(0, 1)
+
+    _add_keyword_label(left,  obj_label, r'Objectifs?\s*:?', lang)
+    _add_cell_content_blocks(left,  obj_blocks,  10, lang)
+
+    _add_keyword_label(right, mat_label, r'Matériel\s*:?',  lang)
+    _add_cell_content_blocks(right, mat_blocks, 10, lang)
+
+    _remove_table_borders(table)
+    doc.add_paragraph()
+
+
+def add_materiel_table(
+    doc: Document,
+    ps_ressources: list[dict] | None = None,
+    ms_ressources: list[dict] | None = None,
+    ps_classe: list[dict] | None = None,
+    ms_classe: list[dict] | None = None,
+    ressources_blocks: list[dict] | None = None,
+    classe_blocks: list[dict] | None = None,
+    lang: str = 'fr-FR',
+) -> None:
+    """2-col / 4-row weekly MATÉRIEL table: PS|MS headers, Ressources, Matériel de classe.
+    When ps_* / ms_* blocks are provided, content is split into PS (left) and MS (right) columns.
+    Otherwise falls back to merged rows using ressources_blocks / classe_blocks."""
+    has_split = bool(ps_ressources or ms_ressources or ps_classe or ms_classe)
+    ps_ressources    = ps_ressources    or []
+    ms_ressources    = ms_ressources    or []
+    ps_classe        = ps_classe        or []
+    ms_classe        = ms_classe        or []
+    ressources_blocks = ressources_blocks or []
+    classe_blocks    = classe_blocks    or []
+
+    table = doc.add_table(rows=4, cols=2)
+    table.style = "Table Grid"
+    content_tw = int(CONTENT_WIDTH * 1440 / 914400)
+    half = content_tw // 2
+    _set_table_col_widths(table, [half, content_tw - half])
+
+    # Row 0 — PS | MS headers
+    for col, (label, color) in enumerate([("PS", Colors.PS_BADGE), ("MS", Colors.MS_BADGE)]):
+        cell = table.cell(0, col)
+        _shade_cell(cell, _rgb_hex(color))
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_before = Pt(3)
+        p.paragraph_format.space_after  = Pt(3)
+        run = p.add_run(label)
+        run.font.name  = _fonts.HEADING
+        run.font.size  = Pt(13)
+        run.font.bold  = True
+        run.font.color.rgb = RGBColor(*Colors.WHITE)
+        _set_run_lang(run, lang)
+
+    def _section_header(cell, label):
+        _shade_cell(cell, _rgb_hex(Colors.LIGHT_GREY))
+        p = cell.paragraphs[0]
+        p.paragraph_format.space_before = Pt(3)
+        p.paragraph_format.space_after  = Pt(1)
+        p.paragraph_format.left_indent  = Pt(4)
+        run = p.add_run(label)
+        run.font.name = _fonts.BODY; run.font.size = Pt(10)
+        run.font.bold = True; run.font.underline = True
+        run.font.color.rgb = RGBColor(*Colors.DARK_GREY)
+        _set_run_lang(run, lang)
+
+    if has_split:
+        # Row 1 — Ressources split: PS left | MS right
+        ps_cell_r = table.cell(1, 0)
+        ms_cell_r = table.cell(1, 1)
+        _section_header(ps_cell_r, "Ressources")
+        _add_cell_content_blocks(ps_cell_r, ps_ressources, 10, lang)
+        _section_header(ms_cell_r, "Ressources")
+        _add_cell_content_blocks(ms_cell_r, ms_ressources, 10, lang)
+
+        # Row 2 — Matériel de classe split: PS left | MS right
+        ps_cell_c = table.cell(2, 0)
+        ms_cell_c = table.cell(2, 1)
+        _section_header(ps_cell_c, "Matériel de classe")
+        _add_cell_content_blocks(ps_cell_c, ps_classe, 10, lang)
+        _section_header(ms_cell_c, "Matériel de classe")
+        _add_cell_content_blocks(ms_cell_c, ms_classe, 10, lang)
+    else:
+        # Legacy: merge rows 1 and 2
+        merged_r1 = table.cell(1, 0).merge(table.cell(1, 1))
+        _section_header(merged_r1, "Ressources")
+        _add_cell_content_blocks(merged_r1, ressources_blocks, 10, lang)
+
+        merged_r2 = table.cell(2, 0).merge(table.cell(2, 1))
+        _section_header(merged_r2, "Matériel de classe")
+        _add_cell_content_blocks(merged_r2, classe_blocks, 10, lang)
+
+    # Row 3 — spare merged row
+    table.cell(3, 0).merge(table.cell(3, 1))
+
+    doc.add_paragraph()
+
+
 def add_section_box(
     doc: Document,
     label: str,
@@ -728,7 +974,8 @@ def add_toc_table(doc: Document, entries: list[dict]) -> None:
 
 # ── Tables ─────────────────────────────────────────────────────────────────────
 
-def add_table(doc: Document, data: list[list[str]], col_colors: list[str] | None = None) -> None:
+def add_table(doc: Document, data: list[list[str]], col_colors: list[str] | None = None,
+              compact: bool = False) -> None:
     """Render an extracted table with colour coding and proper column widths."""
     if not data:
         return
@@ -753,6 +1000,10 @@ def add_table(doc: Document, data: list[list[str]], col_colors: list[str] | None
             p.paragraph_format.space_after  = Pt(2)
 
             # Render cell text — handle embedded bullets, newlines, and **bold** markers
+            cell_size = Pt(7) if compact else Pt(9)
+            cell_spacing = Pt(1) if compact else Pt(2)
+            p.paragraph_format.space_before = cell_spacing
+            p.paragraph_format.space_after  = cell_spacing
             cell_lines = _fix_soft_hyphens(cell_text).split('\n') if cell_text else ['']
             first = True
             for line in cell_lines:
@@ -766,7 +1017,7 @@ def add_table(doc: Document, data: list[list[str]], col_colors: list[str] | None
                         continue
                     run = p.add_run(seg)
                     run.font.name = _fonts.BODY
-                    run.font.size = Pt(9)
+                    run.font.size = cell_size
                     if is_bold:
                         run.font.bold = True
                 first = False
@@ -908,6 +1159,39 @@ def _is_week_row(text: str) -> bool:
 
 
 # ── Images ────────────────────────────────────────────────────────────────────
+
+def add_image_table(doc: Document, descriptions: list[str], lang: str = 'fr-FR') -> None:
+    """1-row table with one cell per image: light grey placeholder with description text."""
+    if not descriptions:
+        return
+    n = len(descriptions)
+    table = doc.add_table(rows=1, cols=n)
+    table.style = "Table Grid"
+    content_tw = int(CONTENT_WIDTH * 1440 / 914400)
+    cell_w = content_tw // n
+    _set_table_col_widths(table, [cell_w] * n)
+
+    for i, desc in enumerate(descriptions):
+        cell = table.cell(0, i)
+        _shade_cell(cell, _rgb_hex(Colors.LIGHT_GREY))
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_before = Pt(18)
+        p.paragraph_format.space_after  = Pt(6)
+        # Icon line
+        r_icon = p.add_run("🖼")
+        r_icon.font.size = Pt(16)
+        p.add_run("\n")
+        # Description
+        r_desc = p.add_run(desc.strip())
+        r_desc.font.name   = _fonts.BODY
+        r_desc.font.size   = Pt(8)
+        r_desc.font.italic = True
+        r_desc.font.color.rgb = RGBColor(*Colors.DARK_GREY)
+        _set_run_lang(r_desc, lang)
+
+    doc.add_paragraph()
+
 
 def add_image_placeholder(doc: Document, text: str) -> None:
     """Render an image placeholder as a light-grey shaded box with italic text."""
