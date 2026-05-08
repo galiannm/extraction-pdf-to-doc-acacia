@@ -23,7 +23,7 @@ from templates.acacia_styles import _add_highlighted_runs
 load_dotenv()
 console = Console()
 
-BATCH_SIZE = 40
+BATCH_SIZE = 10
 
 _PROMPT = """You are a native English-speaking academic expert in early childhood education and pedagogy.
 Your task is to produce a high-quality English version of each French text below.
@@ -60,6 +60,9 @@ RULES:
 - Do NOT translate: codes like N1, G2, E4, P1–P5, the letter X, page numbers, or URLs
 - If an item is already English, a code, or a symbol — return it unchanged
 - Translate "Semaine" → "Week", "Période" → "Period", "Petite Section" → "Kindergarten 1", "Moyenne Section" → "Kindergarten 2"
+- Translate "Jour" → "Day", "CHAQUE JOUR" → "DAILY", "JOUR 1" → "DAY 1", "JOUR 2" → "DAY 2", etc.
+- Translate "Ce qu'il faut savoir" → "What you need to know"
+- Translate "Différenciation" → "Differentiation", "Différenciation et évolution de l'activité" → "Differentiation and activity progression"
 """
 
 
@@ -89,7 +92,27 @@ def translate_docx(
         if new_text and new_text.strip():
             _apply_to_para(para, new_text)
 
+    # Retry items where the translation returned the original text unchanged
+    skipped = [(para, orig) for (para, orig), trans in zip(items, translated_texts)
+               if trans == orig and _should_translate(orig)]
+    if skipped:
+        console.print(f"  [yellow]Retrying {len(skipped)} unchanged items in batches of 5\u2026[/yellow]")
+        skip_paras  = [p for p, _ in skipped]
+        skip_texts  = [t for _, t in skipped]
+        skip_results = []
+        for i in range(0, len(skip_texts), 5):
+            sub = skip_texts[i:i+5]
+            skip_results.extend(_call_gemini(client, sub, _active_prompt))
+        for para, new_text in zip(skip_paras, skip_results):
+            if new_text and new_text.strip():
+                _apply_to_para(para, new_text)
+
+    # Final passes: detect paragraphs still in French and retranslate (run twice to catch stragglers)
+    _retranslate_french_paragraphs(doc, client, _active_prompt)
+    _retranslate_french_paragraphs(doc, client, _active_prompt)
+
     _patch_cover(doc, fr_title, title, fr_subtitle, subtitle)
+    _fix_section_labels(doc)
 
     doc.save(str(en_path))
     console.print(f"  [green]Saved →[/green] {en_path}")
@@ -134,6 +157,11 @@ def _should_translate(text: str) -> bool:
         return False
     if re.fullmatch(r'[Xx]', t):           # X marks in tables
         return False
+    if re.fullmatch(r'[Ss]\d+', t):        # week codes S1–S5
+        return False
+    # Skip period/week banner cells like "Période 1\nS1" — keep structural codes intact
+    if re.search(r'\b[Ss]\d+\s*$', t) and re.search(r'[Pp]ériode', t):
+        return False
     return True
 
 
@@ -147,6 +175,21 @@ def _batch_translate(client, texts: list[str], prompt_template: str = _PROMPT) -
         n = len(results) + len(batch)
         console.print(f"  Batch {i // BATCH_SIZE + 1}: items {i+1}–{n}/{total}…")
         translated = _call_gemini(client, batch, prompt_template)
+
+        # Tier 2: if full batch fell back, retry in sub-batches of 10
+        if translated == batch and len(batch) > 1:
+            console.print("  [yellow]Retrying in sub-batches of 10…[/yellow]")
+            translated = []
+            for j in range(0, len(batch), 10):
+                sub = batch[j : j + 10]
+                sub_result = _call_gemini(client, sub, prompt_template)
+                # Tier 3: if sub-batch also fell back, translate item by item
+                if sub_result == sub and len(sub) > 1:
+                    sub_result = []
+                    for item in sub:
+                        sub_result.extend(_call_gemini(client, [item], prompt_template))
+                translated.extend(sub_result)
+
         results.extend(translated)
     return results
 
@@ -187,20 +230,147 @@ def _apply_to_para(para, new_text: str) -> None:
     if not runs:
         return
 
-    font_name = runs[0].font.name
+    # If ALL runs share the same font, use simple per-run or bulk replacement
+    font_names = {r.font.name for r in runs if r.font.name}
+    all_heading = font_names <= {Fonts.HEADING}
+    all_body    = not (font_names & {Fonts.HEADING})
 
-    if font_name == Fonts.HEADING:
-        # Heading (Mali): simple replace, keep existing run styling
+    if all_heading:
+        # Pure heading paragraph (Mali): replace first run, clear rest
         runs[0].text = new_text
         for run in runs[1:]:
             run.text = ""
-    else:
-        # Body / table cell: clear runs, re-render with EN term highlighting
+
+    elif all_body:
+        if len(runs) == 1:
+            # Single-run body paragraph (section_box label, badge text, etc.):
+            # replace text in-place so bold/color/size are preserved exactly
+            runs[0].text = new_text
+            return
+        # Multi-run body paragraph: clear and re-render with EN term highlighting
         size_emu = runs[0].font.size
         font_size_pt = int(size_emu / 12700) if size_emu else 11
         for r_el in para._p.findall(qn('w:r')):
             para._p.remove(r_el)
         _add_highlighted_runs(para, new_text, font_size_pt, 'en-US')
+
+    else:
+        # Mixed-font paragraph (e.g. banner cells with Nunito label + Mali S\d)
+        # Distribute new_text across runs proportionally by character count
+        lines_new = new_text.split('\n')
+        lines_old = para.text.split('\n')
+        # Map new lines onto runs by matching line count
+        if len(lines_new) == len(runs):
+            for run, line in zip(runs, lines_new):
+                run.text = line
+        else:
+            # Fallback: put all text in first run, blank the rest
+            runs[0].text = new_text
+            for run in runs[1:]:
+                run.text = ""
+
+
+_SECTION_LABEL_MAP = {
+    "ce qu'il faut savoir":                          "What you need to know",
+    "différenciation":                               "Differentiation",
+    "différenciation et évolution de l'activité":    "Differentiation and activity progression",
+    "déroulement":                                   "How it works",
+    "matériel":                                      "Materials",
+    "matériel :":                                    "Materials:",
+    "objectif":                                      "Objective",
+    "objectifs":                                     "Objectives",
+    "objectif :":                                    "Objective:",
+    "objectifs :":                                   "Objectives:",
+    "organisation de classe":                        "Class organisation",
+    "organisation de classe :":                      "Class organisation:",
+    "ressources":                                    "Resources",
+    "ressources :":                                  "Resources:",
+    "matériel de classe":                            "Class materials",
+    "remarques":                                     "Notes",
+    "ce qu'il faut savoir":                          "What you need to know",
+    "1er temps de travail de la journee":             "1st work session of the day",
+    "1er temps de travail de la journee":             "1st work session of the day",
+    "2e temps de travail de la journee":              "2nd work session of the day",
+    "2eme temps de travail de la journee":            "2nd work session of the day",
+    "2ème temps de travail de la journée":            "2nd work session of the day",
+    "2e temps de travail de la journée":              "2nd work session of the day",
+    "1er temps de travail de la journée":             "1st work session of the day",
+}
+
+
+
+def _still_french(text: str) -> bool:
+    """Heuristic: text is likely still in French (not translated)."""
+    if len(text.strip()) < 20:
+        return False
+    t = text.lower()
+    # French-specific word patterns and accented characters (incl. curly apostrophe)
+    indicators = [
+        ' de ', ' du ', ' des ', ' les ', ' une ', ' un ', ' en ',
+        ' et ', ' dans ', ' est ', ' le ', ' la ', ' au ',
+        "l’", "d’", "qu’", "l'", "d'", "qu'",
+        'é', 'è', 'à', 'â', 'ê', 'ï', 'ô', 'û', 'ç',
+    ]
+    count = sum(1 for ind in indicators if ind in t)
+    return count >= 2
+
+
+def _retranslate_french_paragraphs(doc, client, prompt: str) -> None:
+    """Scan all paragraphs for ones still in French and retranslate them."""
+    french_paras = []
+    seen = set()
+
+    def _scan(para):
+        pid = id(para)
+        if pid in seen:
+            return
+        seen.add(pid)
+        if _still_french(para.text) and _should_translate(para.text):
+            french_paras.append(para)
+
+    for para in doc.paragraphs:
+        _scan(para)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    _scan(para)
+
+    if not french_paras:
+        return
+
+    from rich.console import Console as _Console
+    _console = _Console()
+    _console.print(f"  [yellow]Final pass: re-translating {len(french_paras)} French paragraphs…[/yellow]")
+
+    for i in range(0, len(french_paras), 5):
+        sub_paras = french_paras[i:i+5]
+        sub_texts = [p.text for p in sub_paras]
+        results = _call_gemini(client, sub_texts, prompt)
+        for para, new_text in zip(sub_paras, results):
+            if new_text and new_text.strip() and new_text != para.text:
+                _apply_to_para(para, new_text)
+
+
+def _fix_section_labels(doc) -> None:
+    """Post-pass: guarantee known section labels and badge texts are in English."""
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    t_orig = para.text.strip()
+                    t = t_orig.lower().replace('\u2019', "'").replace('\u2018', "'")
+                    en = _SECTION_LABEL_MAP.get(t)
+                    if not en:
+                        t_up = t_orig.upper()
+                        if t_up == 'CHAQUE JOUR':
+                            en = 'DAILY'
+                        elif re.fullmatch(r'JOUR\s+\d+', t_up):
+                            en = 'DAY ' + re.search(r'\d+', t_up).group()
+                    if en and para.runs:
+                        para.runs[0].text = en
+                        for run in para.runs[1:]:
+                            run.text = ""
 
 
 def _patch_cover(doc, fr_title, en_title, fr_subtitle, en_subtitle) -> None:
