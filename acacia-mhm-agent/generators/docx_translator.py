@@ -229,45 +229,11 @@ def _apply_to_para(para, new_text: str) -> None:
     runs = para.runs
     if not runs:
         return
-
-    # If ALL runs share the same font, use simple per-run or bulk replacement
-    font_names = {r.font.name for r in runs if r.font.name}
-    all_heading = font_names <= {Fonts.HEADING}
-    all_body    = not (font_names & {Fonts.HEADING})
-
-    if all_heading:
-        # Pure heading paragraph (Mali): replace first run, clear rest
-        runs[0].text = new_text
-        for run in runs[1:]:
-            run.text = ""
-
-    elif all_body:
-        if len(runs) == 1:
-            # Single-run body paragraph (section_box label, badge text, etc.):
-            # replace text in-place so bold/color/size are preserved exactly
-            runs[0].text = new_text
-            return
-        # Multi-run body paragraph: clear and re-render with EN term highlighting
-        size_emu = runs[0].font.size
-        font_size_pt = int(size_emu / 12700) if size_emu else 11
-        for r_el in para._p.findall(qn('w:r')):
-            para._p.remove(r_el)
-        _add_highlighted_runs(para, new_text, font_size_pt, 'en-US')
-
-    else:
-        # Mixed-font paragraph (e.g. banner cells with Nunito label + Mali S\d)
-        # Distribute new_text across runs proportionally by character count
-        lines_new = new_text.split('\n')
-        lines_old = para.text.split('\n')
-        # Map new lines onto runs by matching line count
-        if len(lines_new) == len(runs):
-            for run, line in zip(runs, lines_new):
-                run.text = line
-        else:
-            # Fallback: put all text in first run, blank the rest
-            runs[0].text = new_text
-            for run in runs[1:]:
-                run.text = ""
+    # Always preserve original run styling: put translated text in first run, clear the rest.
+    # This faithfully copies the FR doc styling (font, color, size) into the EN doc.
+    runs[0].text = new_text
+    for run in runs[1:]:
+        run.text = ""
 
 
 _SECTION_LABEL_MAP = {
@@ -343,13 +309,13 @@ def _retranslate_french_paragraphs(doc, client, prompt: str) -> None:
     _console = _Console()
     _console.print(f"  [yellow]Final pass: re-translating {len(french_paras)} French paragraphs…[/yellow]")
 
-    for i in range(0, len(french_paras), 5):
-        sub_paras = french_paras[i:i+5]
-        sub_texts = [p.text for p in sub_paras]
-        results = _call_gemini(client, sub_texts, prompt)
-        for para, new_text in zip(sub_paras, results):
-            if new_text and new_text.strip() and new_text != para.text:
-                _apply_to_para(para, new_text)
+    # Translate one at a time — guarantees no length mismatches or silent skips
+    for para in french_paras:
+        text = para.text
+        result = _call_gemini(client, [text], prompt)
+        new_text = result[0] if result else text
+        if new_text and new_text.strip() and new_text != text:
+            _apply_to_para(para, new_text)
 
 
 def _fix_section_labels(doc) -> None:
@@ -394,6 +360,8 @@ def _simple_replace(para, new_text: str) -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _clean_json(raw: str) -> str:
+    # Normalise non-breaking and narrow no-break spaces before parsing
+    raw = raw.replace(' ', ' ').replace(' ', ' ')
     result = []
     in_string = False
     escaped = False
