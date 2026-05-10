@@ -107,7 +107,7 @@ def translate_docx(
             if new_text and new_text.strip():
                 _apply_to_para(para, new_text)
 
-    # Final passes: detect paragraphs still in French and retranslate (run twice to catch stragglers)
+    # In-memory final passes (catches some stragglers)
     _retranslate_french_paragraphs(doc, client, _active_prompt)
     _retranslate_french_paragraphs(doc, client, _active_prompt)
 
@@ -116,6 +116,16 @@ def translate_docx(
 
     doc.save(str(en_path))
     console.print(f"  [green]Saved →[/green] {en_path}")
+
+    # Post-save pass: reload the saved doc and retranslate any French that remains.
+    # This catches paragraphs that were in an intermediate state during the live run.
+    console.print("  Post-save French cleanup…")
+    doc2 = Document(str(en_path))
+    _retranslate_french_paragraphs(doc2, client, _active_prompt)
+    _fix_section_labels(doc2)
+    doc2.save(str(en_path))
+    console.print(f"  [green]Done →[/green] {en_path}")
+
     return en_path
 
 
@@ -192,6 +202,31 @@ def _batch_translate(client, texts: list[str], prompt_template: str = _PROMPT) -
 
         results.extend(translated)
     return results
+
+
+def _translate_plain(client, text: str) -> str:
+    """Translate a single French text to English using plain-text output — no JSON, no parse errors."""
+    plain_prompt = (
+        "Translate the following French text to natural, professional English. "
+        "Return ONLY the English translation with no explanation, no quotes, no formatting:\n\n"
+        + text
+    )
+    for attempt in range(1, 4):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=plain_prompt,
+                config=gtypes.GenerateContentConfig(
+                    temperature=0,
+                    thinking_config=gtypes.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+            result = response.text.strip()
+            if result:
+                return result
+        except Exception:
+            pass
+    return text  # fallback: return original
 
 
 def _call_gemini(client, texts: list[str], prompt_template: str = _PROMPT) -> list[str]:
@@ -309,11 +344,10 @@ def _retranslate_french_paragraphs(doc, client, prompt: str) -> None:
     _console = _Console()
     _console.print(f"  [yellow]Final pass: re-translating {len(french_paras)} French paragraphs…[/yellow]")
 
-    # Translate one at a time — guarantees no length mismatches or silent skips
+    # Use plain-text translation (no JSON) — immune to all JSON parse errors
     for para in french_paras:
         text = para.text
-        result = _call_gemini(client, [text], prompt)
-        new_text = result[0] if result else text
+        new_text = _translate_plain(client, text)
         if new_text and new_text.strip() and new_text != text:
             _apply_to_para(para, new_text)
 
